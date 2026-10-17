@@ -16,20 +16,36 @@
     padding: 2rem;
   }
   h1 { margin-bottom: 0.5rem; }
-  .input-row {
-    margin: 1.5rem 0;
+  .controls {
     display: flex;
-    gap: 0.5rem;
-    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+    justify-content: center;
+    margin: 1rem 0;
   }
-  input[type="text"] {
-    font-size: 1.4rem;
-    padding: 0.6rem 1rem;
-    width: 320px;
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  label { font-size: 0.85rem; color: #ccc; }
+  textarea, input[type="text"] {
+    font-size: 1.2rem;
+    padding: 0.5rem 0.8rem;
     border: 2px solid #666;
     border-radius: 6px;
     background: #111;
     color: #fff;
+    font-family: inherit;
+  }
+  textarea { width: 420px; height: 80px; resize: vertical; }
+  input[type="color"] {
+    width: 60px;
+    height: 36px;
+    border: none;
+    background: none;
+    cursor: pointer;
   }
   button {
     font-size: 1.1rem;
@@ -43,16 +59,18 @@
   button:hover { background: #eac; }
   #output {
     margin-top: 1rem;
-    background: #000;
+    background: #111;
     border: 4px solid #333;
     max-width: 95vw;
     overflow-x: auto;
   }
   canvas { display: block; }
   .hint {
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     color: #aaa;
     margin-top: 0.5rem;
+    text-align: center;
+    max-width: 600px;
   }
   .missing {
     color: #f66;
@@ -63,16 +81,30 @@
 </head>
 <body>
   <h1>HSCBS Font Banner</h1>
-  <p>Type text using the available characters. It will be rendered as a banner.</p>
+  <p>Enter text (multiple lines supported). Customize fill and border colors.</p>
   
-  <div class="input-row">
-    <input type="text" id="textInput" value="OaK fLAtS" placeholder="Enter text...">
+  <div class="controls">
+    <div class="control-group">
+      <label for="textInput">Text</label>
+      <textarea id="textInput" placeholder="Enter text...">OaK fLAtS</textarea>
+    </div>
+    <div class="control-group">
+      <label for="fillColor">Fill color</label>
+      <input type="color" id="fillColor" value="#FFFFFF">
+    </div>
+    <div class="control-group">
+      <label for="borderColor">Border color</label>
+      <input type="color" id="borderColor" value="#000000">
+    </div>
     <button id="renderBtn">Render</button>
     <button id="downloadBtn">Download PNG</button>
   </div>
   
   <div id="missing" class="missing"></div>
-  <div class="hint">Available: 0-9, A B C D E F G H I J K L M N O P R S T U V W X Z (mixed case where noted), a e f g h i m n q t y, space</div>
+  <div class="hint">
+    Available characters: 0-9, A–Z (most), a e f g h i m n q t y, spaces, newlines.<br>
+    Colors apply to all characters. Use multiple lines for separate banners.
+  </div>
   
   <div id="output">
     <canvas id="canvas"></canvas>
@@ -81,7 +113,6 @@
 <script>
 const BASE = 'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/images/';
 
-// Character to filename mapping
 const CHAR_MAP = {
   '0': '0.png', '1': '1.png', '2': '2.png', '3': '3.png', '4': '4.png',
   '5': '5.png', '6': '6.png', '7': '7.png', '8': '8.png', '9': '9.png',
@@ -97,13 +128,13 @@ const CHAR_MAP = {
   't': 't_lower.png', 'y': 'y.png'
 };
 
-// Approximate crop that captures the main letter glyph (white square + black strokes)
-// Works reasonably for most images in the set
 const CROP = { x: 650, y: 90, w: 1150, h: 1220 };
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const textInput = document.getElementById('textInput');
+const fillInput = document.getElementById('fillColor');
+const borderInput = document.getElementById('borderColor');
 const missingEl = document.getElementById('missing');
 
 async function loadImage(src) {
@@ -116,88 +147,127 @@ async function loadImage(src) {
   });
 }
 
-async function renderBanner(text) {
+// Recolor a glyph: light pixels → fill, dark pixels → border
+function recolorGlyph(img, fillHex, borderHex) {
+  const temp = document.createElement('canvas');
+  const tctx = temp.getContext('2d');
+  temp.width = CROP.w;
+  temp.height = CROP.h;
+  tctx.drawImage(img, CROP.x, CROP.y, CROP.w, CROP.h, 0, 0, CROP.w, CROP.h);
+
+  const imageData = tctx.getImageData(0, 0, temp.width, temp.height);
+  const data = imageData.data;
+
+  const fill = hexToRgb(fillHex);
+  const border = hexToRgb(borderHex);
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+    if (a < 128) continue;
+    // Brightness threshold: light = fill, dark = border
+    const brightness = (r + g + b) / 3;
+    if (brightness > 100) {
+      data[i] = fill.r;
+      data[i+1] = fill.g;
+      data[i+2] = fill.b;
+    } else {
+      data[i] = border.r;
+      data[i+1] = border.g;
+      data[i+2] = border.b;
+    }
+  }
+  tctx.putImageData(imageData, 0, 0);
+  return temp;
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+async function renderBanner() {
+  const text = textInput.value;
+  const fillHex = fillInput.value;
+  const borderHex = borderInput.value;
   missingEl.textContent = '';
-  const chars = text.split('');
-  const missing = [];
-  const images = [];
 
-  for (const ch of chars) {
-    if (ch === ' ') {
-      images.push(null); // space = gap
-      continue;
+  const lines = text.split('\n');
+  const allMissing = new Set();
+  const lineData = [];
+
+  for (const line of lines) {
+    const chars = line.split('');
+    const images = [];
+    for (const ch of chars) {
+      if (ch === ' ') {
+        images.push(null);
+        continue;
+      }
+      const filename = CHAR_MAP[ch];
+      if (!filename) {
+        allMissing.add(ch);
+        images.push(null);
+        continue;
+      }
+      try {
+        const img = await loadImage(BASE + filename);
+        const recolored = recolorGlyph(img, fillHex, borderHex);
+        images.push(recolored);
+      } catch (e) {
+        allMissing.add(ch);
+        images.push(null);
+      }
     }
-    const filename = CHAR_MAP[ch];
-    if (!filename) {
-      missing.push(ch);
-      images.push(null);
-      continue;
-    }
-    try {
-      const img = await loadImage(BASE + filename);
-      images.push(img);
-    } catch (e) {
-      console.warn('Failed to load', filename, e);
-      missing.push(ch);
-      images.push(null);
-    }
+    lineData.push(images);
   }
 
-  if (missing.length) {
-    missingEl.textContent = 'Missing / unsupported: ' + [...new Set(missing)].join(' ');
+  if (allMissing.size) {
+    missingEl.textContent = 'Missing / unsupported: ' + [...allMissing].join(' ');
   }
 
-  // Target height for each letter
-  const targetH = 280;
-  const gap = 8; // small gap between letters (or for spaces)
-  const spaceWidth = 80;
+  const targetH = 240;
+  const gap = 4;
+  const spaceWidth = 70;
+  const lineGap = 20;
+  const pad = 30;
 
-  let totalW = 40; // side padding
-  const letterWidths = [];
-
-  for (const img of images) {
-    if (!img) {
-      letterWidths.push(spaceWidth);
-      totalW += spaceWidth + gap;
-      continue;
+  // Compute sizes
+  let maxW = 0;
+  const lineWidths = [];
+  for (const images of lineData) {
+    let w = pad * 2;
+    for (const img of images) {
+      const lw = img ? Math.round(targetH * (CROP.w / CROP.h)) : spaceWidth;
+      w += lw + gap;
     }
-    // Scale based on crop height
-    const scale = targetH / CROP.h;
-    const w = Math.round(CROP.w * scale);
-    letterWidths.push(w);
-    totalW += w + gap;
+    lineWidths.push(w);
+    maxW = Math.max(maxW, w);
   }
-  totalW += 40;
 
-  const canvasH = targetH + 60; // padding top/bottom
-  canvas.width = totalW;
-  canvas.height = canvasH;
+  const totalH = lineData.length * (targetH + lineGap) + pad * 2 - lineGap;
+  canvas.width = maxW;
+  canvas.height = totalH;
 
-  // Black background
-  ctx.fillStyle = '#000';
+  // Background (dark, so borders show well)
+  ctx.fillStyle = '#1a1a1a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  let x = 40;
-  const y = 30;
-
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
-    const w = letterWidths[i];
-    if (img) {
-      ctx.drawImage(
-        img,
-        CROP.x, CROP.y, CROP.w, CROP.h,
-        x, y, w, targetH
-      );
+  let y = pad;
+  for (let li = 0; li < lineData.length; li++) {
+    const images = lineData[li];
+    let x = pad;
+    for (const img of images) {
+      const w = img ? Math.round(targetH * (CROP.w / CROP.h)) : spaceWidth;
+      if (img) {
+        ctx.drawImage(img, x, y, w, targetH);
+      }
+      x += w + gap;
     }
-    x += w + gap;
+    y += targetH + lineGap;
   }
 }
 
-document.getElementById('renderBtn').addEventListener('click', () => {
-  renderBanner(textInput.value);
-});
-
+document.getElementById('renderBtn').addEventListener('click', renderBanner);
 document.getElementById('downloadBtn').addEventListener('click', () => {
   const link = document.createElement('a');
   link.download = 'banner.png';
@@ -205,13 +275,12 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
   link.click();
 });
 
-// Initial render
 textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') renderBanner(textInput.value);
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) renderBanner();
 });
 
-// Auto-render on load with default
-renderBanner(textInput.value);
+// Initial render
+renderBanner();
 </script>
 </body>
 </html>
