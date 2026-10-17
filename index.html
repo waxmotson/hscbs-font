@@ -30,16 +30,18 @@
     gap: 0.3rem;
   }
   label { font-size: 0.85rem; color: #ccc; }
-  textarea, input[type="text"] {
-    font-size: 1.2rem;
+  textarea {
+    font-size: 1.1rem;
     padding: 0.5rem 0.8rem;
     border: 2px solid #666;
     border-radius: 6px;
     background: #111;
     color: #fff;
     font-family: inherit;
+    width: 480px;
+    height: 100px;
+    resize: vertical;
   }
-  textarea { width: 420px; height: 80px; resize: vertical; }
   input[type="color"] {
     width: 60px;
     height: 36px;
@@ -64,24 +66,21 @@
     max-width: 95vw;
     overflow-x: auto;
   }
-  canvas { display: block; }
+  canvas { display: block; image-rendering: pixelated; }
   .hint {
     font-size: 0.85rem;
     color: #aaa;
     margin-top: 0.5rem;
     text-align: center;
-    max-width: 600px;
+    max-width: 640px;
+    line-height: 1.4;
   }
-  .missing {
-    color: #f66;
-    font-size: 0.9rem;
-    margin-top: 0.5rem;
-  }
+  .missing { color: #f66; font-size: 0.9rem; margin-top: 0.5rem; }
 </style>
 </head>
 <body>
   <h1>HSCBS Font Banner</h1>
-  <p>Enter text (multiple lines supported). Customize fill and border colors.</p>
+  <p>Enter text. Use <code>[fill,border]</code> to change colors from that point onward.</p>
   
   <div class="controls">
     <div class="control-group">
@@ -89,12 +88,16 @@
       <textarea id="textInput" placeholder="Enter text...">OaK fLAtS</textarea>
     </div>
     <div class="control-group">
-      <label for="fillColor">Fill color</label>
+      <label for="fillColor">Default fill</label>
       <input type="color" id="fillColor" value="#FFFFFF">
     </div>
     <div class="control-group">
-      <label for="borderColor">Border color</label>
+      <label for="borderColor">Default border</label>
       <input type="color" id="borderColor" value="#000000">
+    </div>
+    <div class="control-group">
+      <label for="bgColor">Background</label>
+      <input type="color" id="bgColor" value="#1a1a1a">
     </div>
     <button id="renderBtn">Render</button>
     <button id="downloadBtn">Download PNG</button>
@@ -102,8 +105,9 @@
   
   <div id="missing" class="missing"></div>
   <div class="hint">
-    Available characters: 0-9, A–Z (most), a e f g h i m n q t y, spaces, newlines.<br>
-    Colors apply to all characters. Use multiple lines for separate banners.
+    Color tags: <code>[red,black]</code> or <code>[#ff0000,#00ff00]</code> or CSS names. Applies from that point on.<br>
+    Case-insensitive for letters that only have one case. Multi-line supported.<br>
+    Pixel data from pixelfont.json.
   </div>
   
   <div id="output">
@@ -111,166 +115,228 @@
   </div>
 
 <script>
-const BASE = 'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/images/';
+const JSON_URL = 'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/pixelfont.json';
 
-const CHAR_MAP = {
-  '0': '0.png', '1': '1.png', '2': '2.png', '3': '3.png', '4': '4.png',
-  '5': '5.png', '6': '6.png', '7': '7.png', '8': '8.png', '9': '9.png',
-  'A': 'A_upper.png', 'B': 'B.png', 'C': 'C.png', 'D': 'D.png',
-  'E': 'E_upper.png', 'F': 'F_upper.png', 'G': 'G_upper.png', 'H': 'H_upper.png',
-  'I': 'I_upper.png', 'J': 'J.png', 'K': 'K.png', 'L': 'L.png',
-  'M': 'M_upper.png', 'N': 'N_upper.png', 'O': 'O.png', 'P': 'P.png',
-  'R': 'R.png', 'S': 'S.png', 'T': 'T_upper.png', 'U': 'U.png',
-  'V': 'V.png', 'W': 'W.png', 'X': 'X.png', 'Z': 'Z.png',
-  'a': 'a_lower.png', 'e': 'e_lower.png', 'f': 'f_lower.png',
-  'g': 'g_lower.png', 'h': 'h_lower.png', 'i': 'i_lower.png',
-  'm': 'm_lower.png', 'n': 'n_lower.png', 'q': 'q.png',
-  't': 't_lower.png', 'y': 'y.png'
-};
-
-const CROP = { x: 650, y: 90, w: 1150, h: 1220 };
+let fontData = null;
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const textInput = document.getElementById('textInput');
 const fillInput = document.getElementById('fillColor');
 const borderInput = document.getElementById('borderColor');
+const bgInput = document.getElementById('bgColor');
 const missingEl = document.getElementById('missing');
 
-async function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
-  });
+// Letters that have both cases
+const dualCase = new Set(['A','E','F','G','H','I','M','N','T']);
+
+function resolveChar(ch) {
+  if (fontData[ch]) return ch;
+  const upper = ch.toUpperCase();
+  const lower = ch.toLowerCase();
+  if (fontData[upper] && !dualCase.has(upper)) return upper;
+  if (fontData[lower] && !dualCase.has(upper)) return lower;
+  if (fontData[upper]) return upper;
+  if (fontData[lower]) return lower;
+  return null;
 }
 
-// Recolor a glyph: light pixels → fill, dark pixels → border
-function recolorGlyph(img, fillHex, borderHex) {
-  const temp = document.createElement('canvas');
-  const tctx = temp.getContext('2d');
-  temp.width = CROP.w;
-  temp.height = CROP.h;
-  tctx.drawImage(img, CROP.x, CROP.y, CROP.w, CROP.h, 0, 0, CROP.w, CROP.h);
-
-  const imageData = tctx.getImageData(0, 0, temp.width, temp.height);
-  const data = imageData.data;
-
-  const fill = hexToRgb(fillHex);
-  const border = hexToRgb(borderHex);
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
-    if (a < 128) continue;
-    // Brightness threshold: light = fill, dark = border
-    const brightness = (r + g + b) / 3;
-    if (brightness > 100) {
-      data[i] = fill.r;
-      data[i+1] = fill.g;
-      data[i+2] = fill.b;
-    } else {
-      data[i] = border.r;
-      data[i+1] = border.g;
-      data[i+2] = border.b;
+function parseColor(str) {
+  str = str.trim().toLowerCase();
+  if (!str) return null;
+  // hex
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(str)) {
+    if (str.length === 4) {
+      return '#' + str[1]+str[1] + str[2]+str[2] + str[3]+str[3];
     }
+    return str;
   }
-  tctx.putImageData(imageData, 0, 0);
-  return temp;
+  // try CSS named color via canvas
+  const c = document.createElement('canvas');
+  const cx = c.getContext('2d');
+  cx.fillStyle = str;
+  const resolved = cx.fillStyle;
+  if (resolved && resolved !== 'rgba(0, 0, 0, 0)' && resolved !== str) {
+    // convert to hex if possible
+    if (resolved.startsWith('rgb')) {
+      const m = resolved.match(/(\d+)/g);
+      if (m && m.length >= 3) {
+        return '#' + m.slice(0,3).map(n => parseInt(n).toString(16).padStart(2,'0')).join('');
+      }
+    }
+    return resolved;
+  }
+  // fallback: if it looks like a name, still try
+  return str.startsWith('#') ? str : null;
 }
 
 function hexToRgb(hex) {
+  if (!hex || !hex.startsWith('#')) return {r:255,g:255,b:255};
   const n = parseInt(hex.slice(1), 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+async function loadFont() {
+  if (fontData) return;
+  const res = await fetch(JSON_URL);
+  fontData = await res.json();
+}
+
+function renderGlyph(ch, fillHex, borderHex, pixelSize) {
+  const data = fontData[ch];
+  if (!data) return null;
+  const fillRows = data.fill;
+  const borderRows = data.border;
+  const h = fillRows.length;
+  const w = fillRows[0].length;
+  const temp = document.createElement('canvas');
+  temp.width = w * pixelSize;
+  temp.height = h * pixelSize;
+  const tctx = temp.getContext('2d');
+  const fill = hexToRgb(fillHex);
+  const border = hexToRgb(borderHex);
+
+  for (let y = 0; y < h; y++) {
+    const frow = fillRows[y] || '';
+    const brow = borderRows[y] || '';
+    for (let x = 0; x < w; x++) {
+      const isFill = frow[x] === '#';
+      const isBorder = brow[x] === '#';
+      if (isFill) {
+        tctx.fillStyle = `rgb(${fill.r},${fill.g},${fill.b})`;
+        tctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+      } else if (isBorder) {
+        tctx.fillStyle = `rgb(${border.r},${border.g},${border.b})`;
+        tctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+      }
+      // else transparent
+    }
+  }
+  return temp;
+}
+
 async function renderBanner() {
-  const text = textInput.value;
-  const fillHex = fillInput.value;
-  const borderHex = borderInput.value;
+  await loadFont();
+  const raw = textInput.value;
+  const defaultFill = fillInput.value;
+  const defaultBorder = borderInput.value;
+  const bgColor = bgInput.value;
   missingEl.textContent = '';
 
-  const lines = text.split('\n');
+  // Parse text with color tags
+  const lines = raw.split('\n');
   const allMissing = new Set();
-  const lineData = [];
+  const renderedLines = [];
+
+  let currentFill = defaultFill;
+  let currentBorder = defaultBorder;
 
   for (const line of lines) {
-    const chars = line.split('');
-    const images = [];
-    for (const ch of chars) {
+    const glyphs = [];
+    let i = 0;
+    while (i < line.length) {
+      if (line[i] === '[') {
+        const end = line.indexOf(']', i);
+        if (end !== -1) {
+          const inside = line.slice(i + 1, end);
+          const parts = inside.split(',').map(s => s.trim());
+          if (parts.length >= 1 && parts[0]) {
+            const f = parseColor(parts[0]);
+            if (f) currentFill = f;
+          }
+          if (parts.length >= 2 && parts[1]) {
+            const b = parseColor(parts[1]);
+            if (b) currentBorder = b;
+          }
+          i = end + 1;
+          continue;
+        }
+      }
+      const ch = line[i];
       if (ch === ' ') {
-        images.push(null);
-        continue;
+        glyphs.push({ type: 'space' });
+      } else {
+        const resolved = resolveChar(ch);
+        if (resolved) {
+          glyphs.push({
+            type: 'char',
+            ch: resolved,
+            fill: currentFill,
+            border: currentBorder
+          });
+        } else {
+          allMissing.add(ch);
+          glyphs.push({ type: 'missing' });
+        }
       }
-      const filename = CHAR_MAP[ch];
-      if (!filename) {
-        allMissing.add(ch);
-        images.push(null);
-        continue;
-      }
-      try {
-        const img = await loadImage(BASE + filename);
-        const recolored = recolorGlyph(img, fillHex, borderHex);
-        images.push(recolored);
-      } catch (e) {
-        allMissing.add(ch);
-        images.push(null);
-      }
+      i++;
     }
-    lineData.push(images);
+    renderedLines.push(glyphs);
   }
 
   if (allMissing.size) {
     missingEl.textContent = 'Missing / unsupported: ' + [...allMissing].join(' ');
   }
 
-  const targetH = 240;
-  const gap = 4;
-  const spaceWidth = 70;
-  const lineGap = 20;
-  const pad = 30;
+  const pixelSize = 8; // scale factor for 16x16 glyphs
+  const glyphH = 16 * pixelSize;
+  const spaceW = 8 * pixelSize;
+  const gap = 2;
+  const lineGap = 16;
+  const pad = 16;
 
-  // Compute sizes
+  // Measure
   let maxW = 0;
-  const lineWidths = [];
-  for (const images of lineData) {
+  for (const glyphs of renderedLines) {
     let w = pad * 2;
-    for (const img of images) {
-      const lw = img ? Math.round(targetH * (CROP.w / CROP.h)) : spaceWidth;
-      w += lw + gap;
+    for (const g of glyphs) {
+      if (g.type === 'space') w += spaceW + gap;
+      else if (g.type === 'char') {
+        const data = fontData[g.ch];
+        const gw = (data.fill[0].length) * pixelSize;
+        w += gw + gap;
+      } else w += spaceW + gap;
     }
-    lineWidths.push(w);
     maxW = Math.max(maxW, w);
   }
+  const totalH = renderedLines.length * (glyphH + lineGap) + pad * 2 - lineGap;
 
-  const totalH = lineData.length * (targetH + lineGap) + pad * 2 - lineGap;
-  canvas.width = maxW;
-  canvas.height = totalH;
+  canvas.width = Math.max(maxW, 100);
+  canvas.height = Math.max(totalH, 50);
 
-  // Background (dark, so borders show well)
-  ctx.fillStyle = '#1a1a1a';
+  ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   let y = pad;
-  for (let li = 0; li < lineData.length; li++) {
-    const images = lineData[li];
+  for (const glyphs of renderedLines) {
     let x = pad;
-    for (const img of images) {
-      const w = img ? Math.round(targetH * (CROP.w / CROP.h)) : spaceWidth;
-      if (img) {
-        ctx.drawImage(img, x, y, w, targetH);
+    for (const g of glyphs) {
+      if (g.type === 'char') {
+        const glyphCanvas = renderGlyph(g.ch, g.fill, g.border, pixelSize);
+        if (glyphCanvas) {
+          ctx.drawImage(glyphCanvas, x, y);
+          x += glyphCanvas.width + gap;
+        }
+      } else if (g.type === 'space') {
+        x += spaceW + gap;
+      } else {
+        x += spaceW + gap;
       }
-      x += w + gap;
     }
-    y += targetH + lineGap;
+    y += glyphH + lineGap;
   }
 }
 
 document.getElementById('renderBtn').addEventListener('click', renderBanner);
 document.getElementById('downloadBtn').addEventListener('click', () => {
+  let name = textInput.value
+    .replace(/\[.*?\]/g, '')
+    .replace(/[^a-zA-Z0-9 \-_]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .slice(0, 60) || 'banner';
   const link = document.createElement('a');
-  link.download = 'banner.png';
+  link.download = name + '.png';
   link.href = canvas.toDataURL('image/png');
   link.click();
 });
@@ -279,8 +345,8 @@ textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) renderBanner();
 });
 
-// Initial render
-renderBanner();
+// Initial
+loadFont().then(renderBanner);
 </script>
 </body>
 </html>
