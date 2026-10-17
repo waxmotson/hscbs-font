@@ -80,7 +80,7 @@
 </head>
 <body>
   <h1>HSCBS Font Banner</h1>
-  <p>Enter text. Use <code>[fill,border]</code> to change colors from that point onward.</p>
+  <p>Enter text. Use <code>[fill,border,tile]</code> to change colors from that point onward.</p>
   
   <div class="controls">
     <div class="control-group">
@@ -96,16 +96,28 @@
       <input type="color" id="borderColor" value="#000000">
     </div>
     <div class="control-group">
+      <label for="tileColor">Default tile bg</label>
+      <input type="color" id="tileColor" value="#000000">
+    </div>
+    <div class="control-group">
       <label for="bgColor">Background</label>
       <input type="color" id="bgColor" value="#1a1a1a">
+    </div>
+    <div class="control-group">
+      <label for="scaleInput">Scale</label>
+      <input type="number" id="scaleInput" value="6" min="1" max="24" style="width:4rem;padding:.4rem">
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="tilesOn" checked> Tile frame</label>
     </div>
     <button id="renderBtn">Render</button>
     <button id="downloadBtn">Download PNG</button>
   </div>
   
   <div id="missing" class="missing"></div>
+  <div id="error" class="missing" style="color:#f88"></div>
   <div class="hint">
-    Color tags: <code>[red,black]</code> or <code>[#ff0000,#00ff00]</code> or CSS names. Applies from that point on.<br>
+    Color tags: <code>[red,black]</code>, <code>[#ff0000,#00ff00,#222]</code> or CSS names; leave a slot empty to keep it (<code>[,,blue]</code>). Applies from that point on.<br>
     Case-insensitive for letters that only have one case. Multi-line supported.<br>
     Pixel data from pixelfont.json.
   </div>
@@ -115,221 +127,174 @@
   </div>
 
 <script>
-const JSON_URL = 'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/pixelfont.json';
+// Tried in order: next to index.html (GitHub Pages / local server), then raw GitHub.
+const JSON_URLS = [
+  'pixelfont.json',
+  'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/pixelfont.json',
+  'https://raw.githubusercontent.com/waxmotson/hscbs-font/master/pixelfont.json'
+];
 
 let fontData = null;
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const textInput = document.getElementById('textInput');
-const fillInput = document.getElementById('fillColor');
-const borderInput = document.getElementById('borderColor');
-const bgInput = document.getElementById('bgColor');
-const missingEl = document.getElementById('missing');
+const $ = id => document.getElementById(id);
+const textInput = $('textInput');
+const fillInput = $('fillColor');
+const borderInput = $('borderColor');
+const tileInput = $('tileColor');
+const bgInput = $('bgColor');
+const scaleInput = $('scaleInput');
+const tilesOn = $('tilesOn');
+const missingEl = $('missing');
+const errorEl = $('error');
 
-// Letters that have both cases
-const dualCase = new Set(['A','E','F','G','H','I','M','N','T']);
+const GLYPH_H = 16;      // every glyph is 16 font-pixels tall
+const SPACE_W = 8;       // width of a space, in font pixels
 
+// ---- font loading -------------------------------------------------------
+async function loadFont() {
+  if (fontData) return;
+  const tried = [];
+  for (const url of JSON_URLS) {
+    try {
+      const res = await fetch(url, { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (!data || typeof data !== 'object' || !Object.keys(data).length) throw new Error('empty JSON');
+      fontData = data;
+      return;
+    } catch (e) {
+      tried.push(url + ' (' + e.message + ')');
+    }
+  }
+  throw new Error('Could not load pixelfont.json. Tried: ' + tried.join('; ') +
+    '. If you opened this file directly, either push pixelfont.json to the repo or serve the folder (python3 -m http.server).');
+}
+
+// ---- characters ---------------------------------------------------------
+// Exact match first, then the other case (lowercase letters missing from the sheet use the capital).
 function resolveChar(ch) {
   if (fontData[ch]) return ch;
-  const upper = ch.toUpperCase();
-  const lower = ch.toLowerCase();
-  if (fontData[upper] && !dualCase.has(upper)) return upper;
-  if (fontData[lower] && !dualCase.has(upper)) return lower;
-  if (fontData[upper]) return upper;
-  if (fontData[lower]) return lower;
+  const u = ch.toUpperCase(), l = ch.toLowerCase();
+  if (fontData[u]) return u;
+  if (fontData[l]) return l;
   return null;
 }
 
+// ---- colours ------------------------------------------------------------
 function parseColor(str) {
-  str = str.trim().toLowerCase();
+  str = (str || '').trim().toLowerCase();
   if (!str) return null;
-  // hex
-  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(str)) {
-    if (str.length === 4) {
-      return '#' + str[1]+str[1] + str[2]+str[2] + str[3]+str[3];
-    }
-    return str;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(str)) {
+    return str.length === 4 ? '#' + str[1]+str[1] + str[2]+str[2] + str[3]+str[3] : str;
   }
-  // try CSS named color via canvas
-  const c = document.createElement('canvas');
-  const cx = c.getContext('2d');
-  cx.fillStyle = str;
-  const resolved = cx.fillStyle;
-  if (resolved && resolved !== 'rgba(0, 0, 0, 0)' && resolved !== str) {
-    // convert to hex if possible
-    if (resolved.startsWith('rgb')) {
-      const m = resolved.match(/(\d+)/g);
-      if (m && m.length >= 3) {
-        return '#' + m.slice(0,3).map(n => parseInt(n).toString(16).padStart(2,'0')).join('');
-      }
-    }
-    return resolved;
-  }
-  // fallback: if it looks like a name, still try
-  return str.startsWith('#') ? str : null;
+  // CSS names: canvas ignores invalid values, so compare against two different sentinels
+  const cx = document.createElement('canvas').getContext('2d');
+  cx.fillStyle = '#010203'; cx.fillStyle = str; const a = cx.fillStyle;
+  cx.fillStyle = '#040506'; cx.fillStyle = str; const b = cx.fillStyle;
+  if (a !== b) return null;                       // invalid name
+  if (/^#[0-9a-f]{6}$/i.test(a)) return a.toLowerCase();
+  const m = a.match(/\d+/g);                      // rgb()/rgba() form
+  return m && m.length >= 3 ? '#' + m.slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('') : null;
 }
 
-function hexToRgb(hex) {
-  if (!hex || !hex.startsWith('#')) return {r:255,g:255,b:255};
-  const n = parseInt(hex.slice(1), 16);
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-
-async function loadFont() {
-  if (fontData) return;
-  const res = await fetch(JSON_URL);
-  fontData = await res.json();
-}
-
-function renderGlyph(ch, fillHex, borderHex, pixelSize) {
-  const data = fontData[ch];
-  if (!data) return null;
-  const fillRows = data.fill;
-  const borderRows = data.border;
-  const h = fillRows.length;
-  const w = fillRows[0].length;
-  const temp = document.createElement('canvas');
-  temp.width = w * pixelSize;
-  temp.height = h * pixelSize;
-  const tctx = temp.getContext('2d');
-  const fill = hexToRgb(fillHex);
-  const border = hexToRgb(borderHex);
-
-  for (let y = 0; y < h; y++) {
-    const frow = fillRows[y] || '';
-    const brow = borderRows[y] || '';
-    for (let x = 0; x < w; x++) {
-      const isFill = frow[x] === '#';
-      const isBorder = brow[x] === '#';
-      if (isFill) {
-        tctx.fillStyle = `rgb(${fill.r},${fill.g},${fill.b})`;
-        tctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
-      } else if (isBorder) {
-        tctx.fillStyle = `rgb(${border.r},${border.g},${border.b})`;
-        tctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
-      }
-      // else transparent
+// ---- drawing ------------------------------------------------------------
+function drawGlyph(c, data, x, y, s, col, tiles, F) {
+  const w = data.fill[0].length;
+  if (tiles) {
+    c.fillStyle = col.border; c.fillRect(x, y, (w + 2*F) * s, (GLYPH_H + 2*F) * s);   // frame ring
+    c.fillStyle = col.tile;   c.fillRect(x + F*s, y + F*s, w * s, GLYPH_H * s);       // tile background
+  }
+  const ox = x + (tiles ? F * s : 0), oy = y + (tiles ? F * s : 0);
+  for (let r = 0; r < GLYPH_H; r++) {
+    const frow = data.fill[r] || '', brow = data.border[r] || '';
+    for (let k = 0; k < w; k++) {
+      if (frow[k] === '#')      c.fillStyle = col.fill;
+      else if (brow[k] === '#') c.fillStyle = col.border;
+      else continue;
+      c.fillRect(ox + k * s, oy + r * s, s, s);
     }
   }
-  return temp;
 }
 
 async function renderBanner() {
-  await loadFont();
-  const raw = textInput.value;
-  const defaultFill = fillInput.value;
-  const defaultBorder = borderInput.value;
-  const bgColor = bgInput.value;
+  errorEl.textContent = '';
   missingEl.textContent = '';
+  try {
+    await loadFont();
+  } catch (e) {
+    errorEl.textContent = e.message;
+    return;
+  }
 
-  // Parse text with color tags
-  const lines = raw.split('\n');
+  const s = Math.max(1, Math.min(24, parseInt(scaleInput.value, 10) || 6));
+  const tiles = tilesOn.checked;
+  const F = tiles ? 1 : 0;                 // frame thickness (font px)
+  const gap = tiles ? 1 : 2;               // gap between glyphs (font px)
+  const pad = 2;                           // outer padding (font px)
+  const lineGap = 2;                       // gap between lines (font px)
+
+  // Parse text with colour tags
+  const cur = {
+    fill: fillInput.value, border: borderInput.value, tile: tileInput.value
+  };
   const allMissing = new Set();
-  const renderedLines = [];
-
-  let currentFill = defaultFill;
-  let currentBorder = defaultBorder;
-
-  for (const line of lines) {
-    const glyphs = [];
-    let i = 0;
-    while (i < line.length) {
+  const lines = textInput.value.split('\n').map(line => {
+    const items = [];
+    for (let i = 0; i < line.length; ) {
       if (line[i] === '[') {
         const end = line.indexOf(']', i);
         if (end !== -1) {
-          const inside = line.slice(i + 1, end);
-          const parts = inside.split(',').map(s => s.trim());
-          if (parts.length >= 1 && parts[0]) {
-            const f = parseColor(parts[0]);
-            if (f) currentFill = f;
-          }
-          if (parts.length >= 2 && parts[1]) {
-            const b = parseColor(parts[1]);
-            if (b) currentBorder = b;
-          }
+          const parts = line.slice(i + 1, end).split(',');
+          ['fill', 'border', 'tile'].forEach((k, n) => {
+            const c = parseColor(parts[n]);
+            if (c) cur[k] = c;
+          });
           i = end + 1;
           continue;
         }
       }
-      const ch = line[i];
-      if (ch === ' ') {
-        glyphs.push({ type: 'space' });
-      } else {
-        const resolved = resolveChar(ch);
-        if (resolved) {
-          glyphs.push({
-            type: 'char',
-            ch: resolved,
-            fill: currentFill,
-            border: currentBorder
-          });
-        } else {
-          allMissing.add(ch);
-          glyphs.push({ type: 'missing' });
-        }
-      }
-      i++;
+      const ch = line[i++];
+      if (ch === ' ') { items.push({ space: true }); continue; }
+      const key = resolveChar(ch);
+      if (key) items.push({ data: fontData[key], col: { ...cur } });
+      else { allMissing.add(ch); items.push({ space: true }); }
     }
-    renderedLines.push(glyphs);
-  }
+    return items;
+  });
+  if (allMissing.size) missingEl.textContent = 'Missing / unsupported: ' + [...allMissing].join(' ');
 
-  if (allMissing.size) {
-    missingEl.textContent = 'Missing / unsupported: ' + [...allMissing].join(' ');
-  }
-
-  const pixelSize = 8; // scale factor for 16x16 glyphs
-  const glyphH = 16 * pixelSize;
-  const spaceW = 8 * pixelSize;
-  const gap = 2;
-  const lineGap = 16;
-  const pad = 16;
-
-  // Measure
+  // Measure (font px)
+  const itemW = it => it.space ? SPACE_W : it.data.fill[0].length + 2 * F;
   let maxW = 0;
-  for (const glyphs of renderedLines) {
-    let w = pad * 2;
-    for (const g of glyphs) {
-      if (g.type === 'space') w += spaceW + gap;
-      else if (g.type === 'char') {
-        const data = fontData[g.ch];
-        const gw = (data.fill[0].length) * pixelSize;
-        w += gw + gap;
-      } else w += spaceW + gap;
-    }
+  for (const items of lines) {
+    let w = 0;
+    items.forEach((it, n) => { w += itemW(it) + (n ? gap : 0); });
     maxW = Math.max(maxW, w);
   }
-  const totalH = renderedLines.length * (glyphH + lineGap) + pad * 2 - lineGap;
+  const lineH = GLYPH_H + 2 * F;
+  const totalH = lines.length * lineH + (lines.length - 1) * lineGap;
 
-  canvas.width = Math.max(maxW, 100);
-  canvas.height = Math.max(totalH, 50);
-
-  ctx.fillStyle = bgColor;
+  canvas.width  = Math.max(maxW + pad * 2, 8) * s;
+  canvas.height = Math.max(totalH + pad * 2, 8) * s;
+  ctx.fillStyle = bgInput.value;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   let y = pad;
-  for (const glyphs of renderedLines) {
+  for (const items of lines) {
     let x = pad;
-    for (const g of glyphs) {
-      if (g.type === 'char') {
-        const glyphCanvas = renderGlyph(g.ch, g.fill, g.border, pixelSize);
-        if (glyphCanvas) {
-          ctx.drawImage(glyphCanvas, x, y);
-          x += glyphCanvas.width + gap;
-        }
-      } else if (g.type === 'space') {
-        x += spaceW + gap;
-      } else {
-        x += spaceW + gap;
-      }
+    for (const it of items) {
+      if (!it.space) drawGlyph(ctx, it.data, x * s, y * s, s, it.col, tiles, F);
+      x += itemW(it) + gap;
     }
-    y += glyphH + lineGap;
+    y += lineH + lineGap;
   }
 }
 
-document.getElementById('renderBtn').addEventListener('click', renderBanner);
-document.getElementById('downloadBtn').addEventListener('click', () => {
-  let name = textInput.value
+$('renderBtn').addEventListener('click', renderBanner);
+$('downloadBtn').addEventListener('click', () => {
+  const name = textInput.value
     .replace(/\[.*?\]/g, '')
     .replace(/[^a-zA-Z0-9 \-_]/g, '')
     .trim()
@@ -341,12 +306,13 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
   link.click();
 });
 
-textInput.addEventListener('keydown', (e) => {
+textInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) renderBanner();
 });
+// live update when options change
+[fillInput, borderInput, tileInput, bgInput, scaleInput, tilesOn].forEach(el => el.addEventListener('input', renderBanner));
 
-// Initial
-loadFont().then(renderBanner);
+renderBanner();
 </script>
 </body>
 </html>
