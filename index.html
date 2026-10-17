@@ -68,7 +68,7 @@
 </head>
 <body>
   <h1>HSCBS Font Banner</h1>
-  <p>Type below, the preview updates live. Use <code>[fill,border,tile]</code> to change colors from that point onward.</p>
+  <p>Type below, the preview updates live. Use <code>[fill,border]</code> to change colors from that point onward.</p>
 
   <div class="controls">
     <div class="control-group">
@@ -84,10 +84,6 @@
       <input type="color" id="borderColor" value="#07090e">
     </div>
     <div class="control-group">
-      <label for="tileColor">Default tile bg</label>
-      <input type="color" id="tileColor" value="#07090e">
-    </div>
-    <div class="control-group">
       <label for="bgColor">Background</label>
       <input type="color" id="bgColor" value="#1a1a1a">
       <label><input type="checkbox" id="bgTransparent" checked> transparent</label>
@@ -96,14 +92,17 @@
       <label for="scaleInput">Scale</label>
       <input type="number" id="scaleInput" value="8" min="1" max="32">
     </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="stretchLines"> Stretch lines to longest</label>
+    </div>
     <button id="downloadBtn">Download PNG</button>
   </div>
 
   <div id="missing" class="missing"></div>
   <div id="error" class="missing" style="color:#f88"></div>
   <div class="hint">
-    Color tags: <code>[red,black]</code>, <code>[#ff0000,#00ff00,#222]</code> or CSS names; leave a slot empty to keep it (<code>[,,blue]</code>). Applies from that point on.<br>
-    Letters sit 1px apart (shared border); a space is 3px of border colour. Capitals are used for letters missing in lowercase. Multi-line supported.<br>
+    Color tags: <code>[red,black]</code>, <code>[#ff0000,#00ff00]</code> or CSS names; leave a slot empty to keep it (<code>[,blue]</code>). Applies from that point on.<br>
+    Letters sit 1px apart (shared border); a space is 3px of border colour, an underscore 1px. Capitals are used for letters missing in lowercase. Multi-line supported (each line keeps its own border; tick "stretch" to widen shorter lines to the longest).<br>
     Pixel data from pixelfont.json.
   </div>
 
@@ -130,10 +129,10 @@ const ctx = canvas.getContext('2d');
 const textInput = $('textInput');
 const fillInput = $('fillColor');
 const borderInput = $('borderColor');
-const tileInput = $('tileColor');
 const bgInput = $('bgColor');
 const bgTransparent = $('bgTransparent');
 const scaleInput = $('scaleInput');
+const stretchLines = $('stretchLines');
 const missingEl = $('missing');
 const errorEl = $('error');
 
@@ -185,11 +184,11 @@ function parseColor(str) {
 function render() {
   if (!fontData) return;
   const s = Math.max(1, Math.min(32, parseInt(scaleInput.value, 10) || 8));
-  const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x * s, y * s, w * s, h * s); };
+  const rectOn = (c2, x, y, w, h, col) => { c2.fillStyle = col; c2.fillRect(x * s, y * s, w * s, h * s); };
   missingEl.textContent = '';
 
   // 1. parse text + colour tags into lines of elements
-  const cur = { fill: fillInput.value, border: borderInput.value, tile: tileInput.value };
+  const cur = { fill: fillInput.value, border: borderInput.value };
   const allMissing = new Set();
   const lines = textInput.value.split('\n').map(line => {
     const items = [];
@@ -198,7 +197,7 @@ function render() {
         const end = line.indexOf(']', i);
         if (end !== -1) {
           const parts = line.slice(i + 1, end).split(',');
-          ['fill', 'border', 'tile'].forEach((k, n) => {
+          ['fill', 'border'].forEach((k, n) => {
             const c = parseColor(parts[n]);
             if (c) cur[k] = c;
           });
@@ -207,11 +206,12 @@ function render() {
         }
       }
       const ch = line[i++];
+      if (ch === '_') { items.push({ space: true, w: 1, col: { ...cur } }); continue; }   // underscore = 1px of border colour
       const key = ch === ' ' ? null : resolveChar(ch);
       if (key) items.push({ data: fontData[key], col: { ...cur } });
       else {
         if (ch !== ' ') allMissing.add(ch);
-        items.push({ space: true, col: { ...cur } });
+        items.push({ space: true, w: SPACE_W, col: { ...cur } });
       }
     }
     return items;
@@ -222,44 +222,52 @@ function render() {
   //    so faces are 1px apart. A space is 3px of border colour between the neighbours' rings.
   const H = Math.max(...Object.values(fontData).map(g => g.fill.length));
   let totalW = 0;
+  const lineWs = [];
   for (const items of lines) {
     let x = 0, prevGlyph = false;
     for (const it of items) {
-      if (it.space) { it.x = x; it.w = SPACE_W; x += SPACE_W; prevGlyph = false; }
+      if (it.space) { it.x = x; x += it.w; prevGlyph = false; }
       else {
         const w = it.data.fill[0].length + 2 * RING;
         if (prevGlyph) x -= RING;
         it.x = x; it.w = w; x += w; prevGlyph = true;
       }
     }
+    lineWs.push(x);
     totalW = Math.max(totalW, x);
   }
   const tileH = H + 2 * RING;
-  const totalH = lines.length * tileH - (lines.length - 1) * RING;   // lines overlap their rings too
+  const totalH = lines.length * tileH;                               // each line keeps its own full ring (no overlap)
 
   canvas.width = Math.max(totalW, 1) * s;
   canvas.height = Math.max(totalH, 1) * s;
-  if (!bgTransparent.checked) rect(0, 0, totalW, totalH, bgInput.value);
+  if (!bgTransparent.checked) rectOn(ctx, 0, 0, totalW, totalH, bgInput.value);
 
-  // 3. draw
+  // 3. draw each line on its own canvas, then place it (optionally stretched to the longest line)
+  ctx.imageSmoothingEnabled = false;
   lines.forEach((items, ln) => {
-    const y = ln * (tileH - RING);
+    const lw = lineWs[ln];
+    if (!lw) return;                                     // empty line: blank row
+    const off = document.createElement('canvas');
+    off.width = lw * s; off.height = tileH * s;
+    const c2 = off.getContext('2d');
     for (const it of items) {
-      if (it.space) { rect(it.x, y, it.w, tileH, it.col.border); continue; }
+      if (it.space) { rectOn(c2, it.x, 0, it.w, tileH, it.col.border); continue; }
       const d = it.data, w = d.fill[0].length, h = d.fill.length;
-      rect(it.x, y, it.w, tileH, it.col.border);                              // ring
-      rect(it.x + RING, y + RING, w, H, it.col.tile);                         // tile background
+      rectOn(c2, it.x, 0, it.w, tileH, it.col.border);                        // ring
       for (let r = 0; r < h; r++)
         for (let c = 0; c < w; c++) {
           const px = d.fill[r][c] === '#' ? it.col.fill : d.border[r][c] === '#' ? it.col.border : null;
-          if (px) rect(it.x + RING + c, y + RING + r, 1, 1, px);
+          if (px) rectOn(c2, it.x + RING + c, RING + r, 1, 1, px);
         }
     }
+    const dw = stretchLines.checked ? totalW * s : lw * s;   // nearest-neighbour horizontal stretch
+    ctx.drawImage(off, 0, ln * tileH * s, dw, tileH * s);
   });
 }
 
 // ---- wiring -------------------------------------------------------------
-[textInput, fillInput, borderInput, tileInput, bgInput, bgTransparent, scaleInput]
+[textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines]
   .forEach(el => el.addEventListener('input', render));
 
 $('downloadBtn').addEventListener('click', () => {
