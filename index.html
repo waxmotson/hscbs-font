@@ -43,6 +43,7 @@
   }
   input[type="color"] { width: 60px; height: 36px; border: none; background: none; cursor: pointer; }
   input[type="number"] { width: 4rem; padding: 0.4rem; }
+  select { padding: 0.4rem; font-size: 0.95rem; }
   button {
     font-size: 1.1rem;
     padding: 0.6rem 1.2rem;
@@ -93,6 +94,22 @@
       <input type="number" id="scaleInput" value="8" min="1" max="32">
     </div>
     <div class="control-group">
+      <label for="mergeH">Merge horizontal borders</label>
+      <select id="mergeH">
+        <option value="true">True</option>
+        <option value="same" selected>Same colour</option>
+        <option value="false">False</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="mergeV">Merge vertical borders</label>
+      <select id="mergeV">
+        <option value="true">True</option>
+        <option value="same" selected>Same colour</option>
+        <option value="false">False</option>
+      </select>
+    </div>
+    <div class="control-group">
       <label><input type="checkbox" id="stretchLines"> Stretch lines to longest</label>
     </div>
     <button id="downloadBtn">Download PNG</button>
@@ -102,7 +119,7 @@
   <div id="error" class="missing" style="color:#f88"></div>
   <div class="hint">
     Color tags: <code>[red,black]</code>, <code>[#ff0000,#00ff00]</code> or CSS names; leave a slot empty to keep it (<code>[,blue]</code>). Applies from that point on.<br>
-    Letters sit 1px apart (shared border); a space is 3px of border colour, an underscore 1px. Capitals are used for letters missing in lowercase. Multi-line supported (each line keeps its own border; tick "stretch" to widen shorter lines to the longest).<br>
+    Neighbouring borders merge into 1px when the merge options allow (Same colour = only if both borders match, otherwise 2px with 1px of each); a space is 3px of border colour, an underscore 1px. Capitals are used for letters missing in lowercase. Multi-line supported (tick "stretch" to widen shorter lines to the longest).<br>
     Pixel data from pixelfont.json.
   </div>
 
@@ -133,6 +150,8 @@ const bgInput = $('bgColor');
 const bgTransparent = $('bgTransparent');
 const scaleInput = $('scaleInput');
 const stretchLines = $('stretchLines');
+const mergeHSel = $('mergeH');
+const mergeVSel = $('mergeV');
 const missingEl = $('missing');
 const errorEl = $('error');
 
@@ -221,23 +240,43 @@ function render() {
   // 2. layout (font px). Glyph tiles = face + 1px ring; neighbouring tiles overlap by 1px
   //    so faces are 1px apart. A space is 3px of border colour between the neighbours' rings.
   const H = Math.max(...Object.values(fontData).map(g => g.fill.length));
+  const hMode = mergeHSel.value, vMode = mergeVSel.value;     // 'true' | 'same' | 'false'
+  const mergeH = (a, b) => hMode === 'true' || (hMode === 'same' && a.col.border === b.col.border);
   let totalW = 0;
   const lineWs = [];
   for (const items of lines) {
-    let x = 0, prevGlyph = false;
+    let x = 0, prev = null;
     for (const it of items) {
-      if (it.space) { it.x = x; x += it.w; prevGlyph = false; }
+      if (it.space) { it.x = x; x += it.w; prev = null; }
       else {
         const w = it.data.fill[0].length + 2 * RING;
-        if (prevGlyph) x -= RING;
-        it.x = x; it.w = w; x += w; prevGlyph = true;
+        if (prev && mergeH(prev, it)) x -= RING;      // share one ring column (else 2px: one ring each)
+        it.x = x; it.w = w; x += w; prev = it;
       }
     }
     lineWs.push(x);
     totalW = Math.max(totalW, x);
   }
   const tileH = H + 2 * RING;
-  const totalH = lines.length * tileH;                               // each line keeps its own full ring (no overlap)
+
+  // border colour of the item covering font-pixel column x of a line (later items win overlaps)
+  const borderAt = (items, x) => { let c = null; for (const it of items) if (x >= it.x && x < it.x + it.w) c = it.col.border; return c; };
+  // should the ring between line a and line b be shared (1px) or doubled (2px)?
+  const mergeV = (a, b) => {
+    if (!lineWs[a] || !lineWs[b]) return false;
+    if (vMode !== 'same') return vMode === 'true';
+    const stretch = stretchLines.checked;
+    const n = stretch ? totalW : Math.min(lineWs[a], lineWs[b]);
+    for (let col = 0; col < n; col++) {
+      const xa = stretch ? (col + 0.5) / totalW * lineWs[a] : col + 0.5;
+      const xb = stretch ? (col + 0.5) / totalW * lineWs[b] : col + 0.5;
+      if (borderAt(lines[a], xa) !== borderAt(lines[b], xb)) return false;
+    }
+    return true;
+  };
+  const ys = []; let yy = 0;
+  lines.forEach((_, ln) => { if (ln) yy += tileH - (mergeV(ln - 1, ln) ? RING : 0); ys.push(yy); });
+  const totalH = yy + tileH;
 
   canvas.width = Math.max(totalW, 1) * s;
   canvas.height = Math.max(totalH, 1) * s;
@@ -262,12 +301,12 @@ function render() {
         }
     }
     const dw = stretchLines.checked ? totalW * s : lw * s;   // nearest-neighbour horizontal stretch
-    ctx.drawImage(off, 0, ln * tileH * s, dw, tileH * s);
+    ctx.drawImage(off, 0, ys[ln] * s, dw, tileH * s);
   });
 }
 
 // ---- wiring -------------------------------------------------------------
-[textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines]
+[textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines, mergeHSel, mergeVSel]
   .forEach(el => el.addEventListener('input', render));
 
 $('downloadBtn').addEventListener('click', () => {
