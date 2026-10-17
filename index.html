@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HSCBS Font Banner</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background: #2a1a2a;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 2rem;
+  }
+  h1 { margin-bottom: 0.5rem; }
+  .input-row {
+    margin: 1.5rem 0;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  input[type="text"] {
+    font-size: 1.4rem;
+    padding: 0.6rem 1rem;
+    width: 320px;
+    border: 2px solid #666;
+    border-radius: 6px;
+    background: #111;
+    color: #fff;
+  }
+  button {
+    font-size: 1.1rem;
+    padding: 0.6rem 1.2rem;
+    background: #c94;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #000;
+  }
+  button:hover { background: #eac; }
+  #output {
+    margin-top: 1rem;
+    background: #000;
+    border: 4px solid #333;
+    max-width: 95vw;
+    overflow-x: auto;
+  }
+  canvas { display: block; }
+  .hint {
+    font-size: 0.9rem;
+    color: #aaa;
+    margin-top: 0.5rem;
+  }
+  .missing {
+    color: #f66;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+  }
+</style>
+</head>
+<body>
+  <h1>HSCBS Font Banner</h1>
+  <p>Type text using the available characters. It will be rendered as a banner.</p>
+  
+  <div class="input-row">
+    <input type="text" id="textInput" value="OaK fLAtS" placeholder="Enter text...">
+    <button id="renderBtn">Render</button>
+    <button id="downloadBtn">Download PNG</button>
+  </div>
+  
+  <div id="missing" class="missing"></div>
+  <div class="hint">Available: 0-9, A B C D E F G H I J K L M N O P R S T U V W X Z (mixed case where noted), a e f g h i m n q t y, space</div>
+  
+  <div id="output">
+    <canvas id="canvas"></canvas>
+  </div>
+
+<script>
+const BASE = 'https://raw.githubusercontent.com/waxmotson/hscbs-font/main/images/';
+
+// Character to filename mapping
+const CHAR_MAP = {
+  '0': '0.png', '1': '1.png', '2': '2.png', '3': '3.png', '4': '4.png',
+  '5': '5.png', '6': '6.png', '7': '7.png', '8': '8.png', '9': '9.png',
+  'A': 'A_upper.png', 'B': 'B.png', 'C': 'C.png', 'D': 'D.png',
+  'E': 'E_upper.png', 'F': 'F_upper.png', 'G': 'G_upper.png', 'H': 'H_upper.png',
+  'I': 'I_upper.png', 'J': 'J.png', 'K': 'K.png', 'L': 'L.png',
+  'M': 'M_upper.png', 'N': 'N_upper.png', 'O': 'O.png', 'P': 'P.png',
+  'R': 'R.png', 'S': 'S.png', 'T': 'T_upper.png', 'U': 'U.png',
+  'V': 'V.png', 'W': 'W.png', 'X': 'X.png', 'Z': 'Z.png',
+  'a': 'a_lower.png', 'e': 'e_lower.png', 'f': 'f_lower.png',
+  'g': 'g_lower.png', 'h': 'h_lower.png', 'i': 'i_lower.png',
+  'm': 'm_lower.png', 'n': 'n_lower.png', 'q': 'q.png',
+  't': 't_lower.png', 'y': 'y.png'
+};
+
+// Approximate crop that captures the main letter glyph (white square + black strokes)
+// Works reasonably for most images in the set
+const CROP = { x: 650, y: 90, w: 1150, h: 1220 };
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const textInput = document.getElementById('textInput');
+const missingEl = document.getElementById('missing');
+
+async function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function renderBanner(text) {
+  missingEl.textContent = '';
+  const chars = text.split('');
+  const missing = [];
+  const images = [];
+
+  for (const ch of chars) {
+    if (ch === ' ') {
+      images.push(null); // space = gap
+      continue;
+    }
+    const filename = CHAR_MAP[ch];
+    if (!filename) {
+      missing.push(ch);
+      images.push(null);
+      continue;
+    }
+    try {
+      const img = await loadImage(BASE + filename);
+      images.push(img);
+    } catch (e) {
+      console.warn('Failed to load', filename, e);
+      missing.push(ch);
+      images.push(null);
+    }
+  }
+
+  if (missing.length) {
+    missingEl.textContent = 'Missing / unsupported: ' + [...new Set(missing)].join(' ');
+  }
+
+  // Target height for each letter
+  const targetH = 280;
+  const gap = 8; // small gap between letters (or for spaces)
+  const spaceWidth = 80;
+
+  let totalW = 40; // side padding
+  const letterWidths = [];
+
+  for (const img of images) {
+    if (!img) {
+      letterWidths.push(spaceWidth);
+      totalW += spaceWidth + gap;
+      continue;
+    }
+    // Scale based on crop height
+    const scale = targetH / CROP.h;
+    const w = Math.round(CROP.w * scale);
+    letterWidths.push(w);
+    totalW += w + gap;
+  }
+  totalW += 40;
+
+  const canvasH = targetH + 60; // padding top/bottom
+  canvas.width = totalW;
+  canvas.height = canvasH;
+
+  // Black background
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let x = 40;
+  const y = 30;
+
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    const w = letterWidths[i];
+    if (img) {
+      ctx.drawImage(
+        img,
+        CROP.x, CROP.y, CROP.w, CROP.h,
+        x, y, w, targetH
+      );
+    }
+    x += w + gap;
+  }
+}
+
+document.getElementById('renderBtn').addEventListener('click', () => {
+  renderBanner(textInput.value);
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  const link = document.createElement('a');
+  link.download = 'banner.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+// Initial render
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') renderBanner(textInput.value);
+});
+
+// Auto-render on load with default
+renderBanner(textInput.value);
+</script>
+</body>
+</html>
