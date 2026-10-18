@@ -219,6 +219,9 @@
     </div>
     <div class="control-group">
       <label><input type="checkbox" id="stretchLines"> Stretch lines to longest</label>
+    <div class="control-group">
+      <label><input type="checkbox" id="squareStretch"> Keep letters square when stretching</label>
+    </div>
     </div>
     <button id="downloadBtn">Download PNG</button>
   </div>
@@ -227,7 +230,7 @@
   <div id="error" class="missing" style="color:#f88"></div>
   <div class="hint">
     Color tags: <code>[red,black]</code>, <code>[#ff0000,#00ff00]</code> or CSS names; leave a slot empty to keep it (<code>[,blue]</code>). Applies from that point on.<br>
-    Neighbouring borders merge into 1px when the merge options allow (Same colour = only if both borders match, otherwise 2px with 1px of each); a space is 3px of border colour, an underscore 1px. Capitals are used for letters missing in lowercase. Multi-line supported (tick "stretch" to widen shorter lines to the longest).<br>
+    Neighbouring borders merge into 1px when the merge options allow (Same colour = only if both borders match, otherwise 2px with 1px of each); a space is 3px of border colour, an underscore 1px. Capitals are used for letters missing in lowercase. Multi-line supported (tick "stretch" to widen shorter lines to the longest). Add <code>{hs}</code> or <code>{vs}</code> at the start of a line to stretch that line horizontally or proportionally (keeping letters square); these tags override the square-stretch checkbox for that line.<br>
     Pixel data from pixelfont.json.
   </div>
 
@@ -258,6 +261,7 @@ const bgInput = $('bgColor');
 const bgTransparent = $('bgTransparent');
 const scaleInput = $('scaleInput');
 const stretchLines = $('stretchLines');
+const squareStretch = $('squareStretch');
 const mergeHSel = $('mergeH');
 const mergeVSel = $('mergeV');
 const missingEl = $('missing');
@@ -317,8 +321,16 @@ function render() {
   // 1. parse text + colour tags into lines of elements
   const cur = { fill: fillInput.value, border: borderInput.value };
   const allMissing = new Set();
-  const lines = textInput.value.split('\n').map(line => {
+  const lines = textInput.value.split('\n').map(rawLine => {
+    // Per-line tags override the global square-stretch setting.
+    let stretchMode = null;
+    const tag = rawLine.match(/^\s*\{\s*(hs|vs)\s*\}/i);
+    if (tag) {
+      stretchMode = tag[1].toLowerCase();
+      rawLine = rawLine.slice(tag[0].length);
+    }
     const items = [];
+    items.stretchMode = stretchMode;
     for (let i = 0; i < line.length; ) {
       if (line[i] === '[') {
         const end = line.indexOf(']', i);
@@ -366,6 +378,11 @@ function render() {
     totalW = Math.max(totalW, x);
   }
   const tileH = H + 2 * RING;
+  // A tagged line stretches even when the global stretch checkbox is off.
+  const lineStretch = lines.map(items => stretchLines.checked || items.stretchMode !== null);
+  const lineSquare = lines.map(items => items.stretchMode === 'vs' || (items.stretchMode === null && squareStretch.checked));
+  const lineFactors = lines.map((items, i) => lineStretch[i] && lineWs[i] ? totalW / lineWs[i] : 1);
+  const lineHeights = lines.map((items, i) => Math.max(1, Math.round(tileH * (lineSquare[i] ? lineFactors[i] : 1))));
 
   // border colour of the item covering font-pixel column x of a line (later items win overlaps)
   const borderAt = (items, x) => { let c = null; for (const it of items) if (x >= it.x && x < it.x + it.w) c = it.col.border; return c; };
@@ -373,18 +390,21 @@ function render() {
   const mergeV = (a, b) => {
     if (!lineWs[a] || !lineWs[b]) return false;
     if (vMode !== 'same') return vMode === 'true';
-    const stretch = stretchLines.checked;
-    const n = stretch ? totalW : Math.min(lineWs[a], lineWs[b]);
+    const stretchA = lineStretch[a], stretchB = lineStretch[b];
+    const n = stretchA && stretchB ? totalW : Math.min(stretchA ? totalW : lineWs[a], stretchB ? totalW : lineWs[b]);
     for (let col = 0; col < n; col++) {
-      const xa = stretch ? (col + 0.5) / totalW * lineWs[a] : col + 0.5;
-      const xb = stretch ? (col + 0.5) / totalW * lineWs[b] : col + 0.5;
+      const xa = stretchA ? (col + 0.5) / totalW * lineWs[a] : col + 0.5;
+      const xb = stretchB ? (col + 0.5) / totalW * lineWs[b] : col + 0.5;
       if (borderAt(lines[a], xa) !== borderAt(lines[b], xb)) return false;
     }
     return true;
   };
   const ys = []; let yy = 0;
-  lines.forEach((_, ln) => { if (ln) yy += tileH - (mergeV(ln - 1, ln) ? RING : 0); ys.push(yy); });
-  const totalH = yy + tileH;
+  lines.forEach((_, ln) => {
+    if (ln) yy += lineHeights[ln - 1] - (mergeV(ln - 1, ln) && lineHeights[ln - 1] === lineHeights[ln] ? RING : 0);
+    ys.push(yy);
+  });
+  const totalH = yy + lineHeights[lineHeights.length - 1];
 
   canvas.width = Math.max(totalW, 1) * s;
   canvas.height = Math.max(totalH, 1) * s;
@@ -408,13 +428,13 @@ function render() {
           if (px) rectOn(c2, it.x + RING + c, RING + r, 1, 1, px);
         }
     }
-    const dw = stretchLines.checked ? totalW * s : lw * s;   // nearest-neighbour horizontal stretch
-    ctx.drawImage(off, 0, ys[ln] * s, dw, tileH * s);
+    const dw = lineStretch[ln] ? totalW * s : lw * s;   // nearest-neighbour horizontal stretch
+    ctx.drawImage(off, 0, ys[ln] * s, dw, lineHeights[ln] * s);
   });
 }
 
 // ---- wiring -------------------------------------------------------------
-[textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines, mergeHSel, mergeVSel]
+[textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines, squareStretch, mergeHSel, mergeVSel]
   .forEach(el => el.addEventListener('input', render));
 
 $('downloadBtn').addEventListener('click', () => {
