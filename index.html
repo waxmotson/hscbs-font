@@ -223,7 +223,8 @@
     <div class="control-group">
       <label><input type="checkbox" id="squareStretch"> Keep letters square when stretching</label>
     </div>
-    <button id="downloadBtn">Download PNG</button>
+    <button id="copyImageBtn" type="button">Copy Image</button>
+    <button id="downloadBtn" type="button">Download PNG</button>
   </div>
 
   <div id="missing" class="missing"></div>
@@ -436,6 +437,24 @@ function render() {
 // ---- wiring -------------------------------------------------------------
 [textInput, fillInput, borderInput, bgInput, bgTransparent, scaleInput, stretchLines, squareStretch, mergeHSel, mergeVSel]
   .forEach(el => el.addEventListener('input', render));
+
+$('copyImageBtn').addEventListener('click', async () => {
+  const button = $('copyImageBtn');
+  const originalText = button.textContent;
+  try {
+    if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+      throw new Error('Image clipboard access is unavailable. Open this page over HTTPS in a supported browser.');
+    }
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(image => image ? resolve(image) : reject(new Error('Could not create PNG.')), 'image/png');
+    });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    button.textContent = 'Copied!';
+    setTimeout(() => { button.textContent = originalText; }, 1600);
+  } catch (error) {
+    errorEl.textContent = 'Could not copy image: ' + (error.message || 'clipboard permission denied') + '. Try the Download PNG button instead.';
+  }
+});
 
 $('downloadBtn').addEventListener('click', () => {
   const name = textInput.value
