@@ -219,9 +219,9 @@
     </div>
     <div class="control-group">
       <label><input type="checkbox" id="stretchLines"> Stretch lines to longest</label>
+    </div>
     <div class="control-group">
       <label><input type="checkbox" id="squareStretch"> Keep letters square when stretching</label>
-    </div>
     </div>
     <button id="downloadBtn">Download PNG</button>
   </div>
@@ -344,7 +344,7 @@ function render() {
           continue;
         }
       }
-      const ch = line[i++];
+      const ch = rawLine[i++];
       if (ch === '_') { items.push({ space: true, w: 1, col: { ...cur } }); continue; }   // underscore = 1px of border colour
       const key = ch === ' ' ? null : resolveChar(ch);
       if (key) items.push({ data: fontData[key], col: { ...cur } });
