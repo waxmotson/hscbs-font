@@ -331,11 +331,11 @@ function render() {
     }
     const items = [];
     items.stretchMode = stretchMode;
-    for (let i = 0; i < line.length; ) {
-      if (line[i] === '[') {
-        const end = line.indexOf(']', i);
+    for (let i = 0; i < rawLine.length; ) {
+      if (rawLine[i] === '[') {
+        const end = rawLine.indexOf(']', i);
         if (end !== -1) {
-          const parts = line.slice(i + 1, end).split(',');
+          const parts = rawLine.slice(i + 1, end).split(',');
           ['fill', 'border'].forEach((k, n) => {
             const c = parseColor(parts[n]);
             if (c) cur[k] = c;
